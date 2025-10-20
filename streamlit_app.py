@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 import streamlit as st
 from supabase import create_client
-from email_sender import send_via_smtp, send_via_resend
+from email_sender import send_via_smtp, send_via_resend, to_html_paras, build_html
 
 # Charger .env au démarrage
 load_dotenv()
@@ -59,11 +59,25 @@ if group_names:
 
 # --- Main: formulaire d'envoi ---
 st.title("📨 Envoi d’e-mail à des groupes")
-st.caption("Saisis l’objet, le contenu, sélectionne un groupe et ajoute des pièces jointes.")
+st.caption("Saisis l’objet, choisis le mode de formatage (Texte/HTML/Auto), sélectionne un groupe et ajoute des pièces jointes.")
 
 with st.form("send_form"):
     subject = st.text_input("Objet")
-    body = st.text_area("Contenu (HTML autorisé)", height=220, placeholder="Bonjour,\n\n...")
+    preheader = st.text_input("Pré-en-tête (préheader, aperçu dans la boîte de réception)", value="Invitation au Hackathon Water4Future 2026")
+    format_mode = st.radio(
+        "Format du contenu",
+        options=["Texte brut", "HTML libre", "Auto-format (paragraphes)"],
+        index=2,
+        help="• Texte brut : envoi sans HTML, \\n font des retours simples.\n• HTML libre : tu colles directement du HTML.\n• Auto-format : ton texte est converti en <p>…</p> et <br>."
+    )
+    use_template = st.checkbox("Utiliser le gabarit HTML (recommandé pour Gmail/Outlook)", value=True)
+
+    body_input = st.text_area(
+        "Contenu (saisi texte ou HTML selon le mode)",
+        height=240,
+        placeholder="Bonjour,\n\nVoici l’invitation…\n\n• Dates : 26 & 27 février 2026\n• Clôture : 19 décembre 2025\n\nFormulaire : https://forms.gle/9jssEdoqpEp2S2Ju7\nVidéo : https://youtu.be/YjZBfhO5NWM\n"
+    )
+
     selected_groups = st.multiselect(
         "Groupes de destinataires",
         options=list(group_names.keys()) if group_names else [],
@@ -81,13 +95,28 @@ if submit:
         emails |= {m["email"] for m in mem}
     emails = sorted(list(emails))
 
-    if not subject or not body or not emails:
+    if not subject or not body_input or not emails:
         st.error("Objet, contenu et au moins un destinataire sont requis.")
     else:
         # Préparer pièces jointes
         attachments = []
         for f in files or []:
             attachments.append((f.name, f.read()))
+
+        # Construire texte brut + HTML
+        if format_mode == "Texte brut":
+            text_body = body_input.replace("\r\n", "\n")
+            html_main = to_html_paras(text_body)  # pour ceux qui lisent HTML on garde la structure
+        elif format_mode == "HTML libre":
+            text_body = body_input.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+            text_body = st.session_state.get("fallback_text", text_body)  # simple fallback si tu veux raffiner
+            html_main = body_input
+        else:
+            # Auto-format
+            text_body = body_input.replace("\r\n", "\n")
+            html_main = to_html_paras(text_body)
+
+        final_html = build_html(subject, html_main, preheader) if use_template else html_main
 
         # Choix du mode d’envoi selon .env
         smtp_user = os.getenv("SMTP_USER", "")
@@ -106,8 +135,9 @@ if submit:
                     from_addr=from_addr,
                     recipients=emails,
                     subject=subject,
-                    html_body=body,
-                    attachments=attachments
+                    text_body=text_body,
+                    html_body=final_html,
+                    attachments=attachments,
                 )
             else:
                 # Sinon SMTP
@@ -119,7 +149,8 @@ if submit:
                     sender=from_addr,
                     recipients=emails,
                     subject=subject,
-                    html_body=body,
+                    text_body=text_body,
+                    html_body=final_html,
                     attachments=attachments,
                     host=smtp_host,
                     port=smtp_port,
