@@ -1,13 +1,23 @@
+import os
+from dotenv import load_dotenv
+
 import streamlit as st
 from supabase import create_client
-import os
 from email_sender import send_via_smtp, send_via_resend
+
+# Charger .env au démarrage
+load_dotenv()
 
 st.set_page_config(page_title="Mail Groups Sender", page_icon="📧", layout="centered")
 
 # --- Connexion Supabase ---
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_ANON_KEY"]
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("Variables Supabase manquantes. Vérifie SUPABASE_URL et SUPABASE_ANON_KEY dans ton fichier .env.")
+    st.stop()
+
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Sidebar: gestion des groupes ---
@@ -16,7 +26,7 @@ with st.sidebar.expander("Créer un groupe", expanded=True):
     new_group = st.text_input("Nom du groupe")
     if st.button("➕ Ajouter"):
         if new_group.strip():
-            r = sb.table("email_groups").insert({"name": new_group.strip()}).execute()
+            sb.table("email_groups").insert({"name": new_group.strip()}).execute()
             st.success("Groupe créé.")
         else:
             st.warning("Nom invalide.")
@@ -53,16 +63,12 @@ st.caption("Saisis l’objet, le contenu, sélectionne un groupe et ajoute des p
 
 with st.form("send_form"):
     subject = st.text_input("Objet")
-    body = st.text_area("Contenu (HTML autorisé)", height=220,
-                        placeholder="Bonjour,\n\n...")
-
-    # Choix des groupes (multi)
+    body = st.text_area("Contenu (HTML autorisé)", height=220, placeholder="Bonjour,\n\n...")
     selected_groups = st.multiselect(
         "Groupes de destinataires",
         options=list(group_names.keys()) if group_names else [],
         default=[sel_group_name] if group_names else []
     )
-
     files = st.file_uploader("Pièces jointes (multiple)", accept_multiple_files=True)
     submit = st.form_submit_button("✉️ Envoyer")
 
@@ -78,31 +84,49 @@ if submit:
     if not subject or not body or not emails:
         st.error("Objet, contenu et au moins un destinataire sont requis.")
     else:
+        # Préparer pièces jointes
         attachments = []
         for f in files or []:
             attachments.append((f.name, f.read()))
 
-        # Choix du mode d’envoi selon les secrets renseignés
-        smtp_user = st.secrets.get("SMTP_USER", "")
-        smtp_pwd = st.secrets.get("SMTP_PASSWORD", "")
-        resend_key = st.secrets.get("RESEND_API_KEY", "")
-        from_addr = st.secrets.get("RESEND_FROM", smtp_user or "no-reply@example.com")
+        # Choix du mode d’envoi selon .env
+        smtp_user = os.getenv("SMTP_USER", "")
+        smtp_pwd = os.getenv("SMTP_PASSWORD", "")
+        smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+        smtp_port = int(os.getenv("SMTP_PORT", "465"))
+
+        resend_key = os.getenv("RESEND_API_KEY", "")
+        from_addr = os.getenv("RESEND_FROM", smtp_user or "no-reply@example.com")
 
         try:
             if resend_key:
-                send_via_resend(resend_key, from_addr, emails, subject, body, attachments)
+                # Mode API Resend si clé fournie
+                send_via_resend(
+                    api_key=resend_key,
+                    from_addr=from_addr,
+                    recipients=emails,
+                    subject=subject,
+                    html_body=body,
+                    attachments=attachments
+                )
             else:
+                # Sinon SMTP
+                if not smtp_user or not smtp_pwd:
+                    st.error("Pas de RESEND_API_KEY et identifiants SMTP incomplets. Renseigne .env.")
+                    st.stop()
+
                 send_via_smtp(
                     sender=from_addr,
                     recipients=emails,
                     subject=subject,
                     html_body=body,
                     attachments=attachments,
-                    host=st.secrets.get("SMTP_HOST","smtp.gmail.com"),
-                    port=int(st.secrets.get("SMTP_PORT",465)),
+                    host=smtp_host,
+                    port=smtp_port,
                     user=smtp_user,
                     password=smtp_pwd
                 )
+
             st.success(f"Email envoyé à {len(emails)} destinataire(s).")
         except Exception as e:
             st.exception(e)
