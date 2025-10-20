@@ -72,7 +72,6 @@ def send_via_smtp(sender, recipients, subject, text_body, html_body, attachments
     """
     msg = EmailMessage()
     msg["From"] = sender
-    msg["To"] = sender
     msg["Bcc"] = ", ".join(recipients)
     msg["Subject"] = subject
 
